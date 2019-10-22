@@ -1,0 +1,27 @@
+Git terminal commands:
+
+- git status
+    Gives info about branch being worked on, files changed since last commit, 
+    files staged for the next commit.
+
+- git add [file name]
+    Stage a changed file to be part of next commit.
+
+- git commit
+    Makes a commit in local repo. with all staged files. Make sure to add a
+    commit message. To avoid using vi/nano, use the -m option
+        ie: git commit -m "Commit message goes here"
+
+- git checkout [branch name]
+    Switch to a different working branch on local repo. Use the -b option to
+    create a new branch and switch to it
+        ie: git checkout -b [new branch name]
+
+- git pull [remote repo.]
+    Update local repo. from remote repo. To pull from github use the origin aliase.
+        ie: git pull origin
+
+- git push
+    Push local repo. to remote repo. Should never push directly to orgin's master branch. To push to a
+    branch on origin(github) use -u option.
+        ie: git push origin -u [branch name]
