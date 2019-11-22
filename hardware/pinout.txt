@@ -1,4 +1,4 @@
-Pin Assinment
+Pin Assinments
 Corbin Bremmeyr
 Nick Veltema
 EGR326 Project
@@ -6,25 +6,26 @@ EGR326 Project
 -------------------------------------------------
 Hardware Devices
 -------------------------------------------------
-1.  MSP432
-2.  LCD ST7735
-3.  Screen btn
-4.  RTC DS3231
-5.  Rotary encoder KY-040
-6.  Blinker LED (right)
-7.  Blinker LED (left)
-8.  Blinker switch (3 position)
-9.  Tach stepper motor & driver board X27-168 & MX1508
-10. Speedo stepper motor & driver board X27-168 & MX1508
-11. Speed simulator stepper motor & driveer board 28BYJ-48 & L293
-12. Speed Hall effect sensor OH137
-13. Prox sensors HC-SR04
-14. Speaker
-15. 7-Seg display MAX7219
-16. Temperature sensor
+1.   MSP432 (Master)
+2.   MSp432 (Slave)
+3.   LCD ST7735
+4.   Screen btn
+5.   RTC DS3231
+6.   Rotary encoder KY-040
+7.   Blinker LED (right)
+8.   Blinker LED (left)
+9.   Blinker switch (3 position)
+10.  Tach stepper motor & driver board X27-168 & MX1508
+11.  Speedo stepper motor & driver board X27-168 & MX1508
+12.  Speed Hall effect sensor OH137
+13.  Prox sensors HC-SR04
+14.  Speaker
+15.  7-Seg display MAX7219
+16.  Temperature sensor
+17.  Alarm LED
 
 -------------------------------------------------
-MSP432 Used Pins
+1. Master MSP432 Used Pins
 -------------------------------------------------
 P2.4
 P2.5
@@ -56,6 +57,16 @@ P9.5
 P9.7
 
 -------------------------------------------------
+2. Slave MSP432 Used Pins
+-------------------------------------------------
+// TODO:
+P2.4
+
+P5.6
+
+P6.4
+P6.5
+-------------------------------------------------
 Device Pin Connections
 -------------------------------------------------
 
@@ -63,7 +74,7 @@ Device Pin Connections
     Pin     Pin
 ------------------------
 
-2. LCD
+3. LCD
     LED                     TODO: needs to be PWM, not just a Vcc connection`
     SCK     P9.5
     SDA     P9.7
@@ -73,10 +84,10 @@ Device Pin Connections
     GND     GND
     VCC     3V3
 
-3. Screen btn
-    P8.5
+4. Screen btn
+    P2.0
 
-4. RTC
+5. RTC
     32K     ---
     SQW                     TODO: may be used for RTC alarms
     SCL     P6.5
@@ -84,23 +95,17 @@ Device Pin Connections
     VCC     3V3
     GND     GND
 
-5. Rotary encoder
+6. Rotary encoder
     CLK     P5.4
     DT      P5.5
     SW      P5.6
     +       3V3
     GND     GND
 
-6. Blinker LED (right)
-    
+7. Blinker Controll
+    P5.6 (Slave MSP432)
 
-7. Blinker LED (left)
-
-
-8. Blinker switch (3 position)
-
-
-9. Tach stepper motor & driver board
+8. Tach stepper motor & driver board
     IN1     
     IN2     
     IN3     
@@ -108,7 +113,7 @@ Device Pin Connections
     +       
     -       
 
-10. Speedo stepper motor & driver board
+9. Speedo stepper motor & driver board
     IN1     P4.0
     IN2     P4.1
     IN3     P4.2
@@ -116,40 +121,35 @@ Device Pin Connections
     +       5V
     -       GND
 
-11. Speed simulator stepper motor & driveer board
-    IN1     P4.4
-    IN2     P4.5
-    IN3     P4.6
-    IN4     P4.7
-    +       5V
-    -       GND
-
-12. Speed Hall effect sensor
+10. Speed Hall effect sensor
     OUT     P3.0
         Note: OUT needs a pull up resistor (to 3V3) and a ~20pF cap to GND
     VCC     5V
     GND     GND
 
-13. Prox sensors
+11. Prox sensors
     Vcc     5V
     Trig    P2.5
     Echo    P2.4
         Note: Echo is a 5V output, needs a resistor & MOSFET logic level converter (inverts signal)
     Gnd     GND
 
-14. Speaker
+12. Speaker
+    P2.4 (Slave MSP432)
 
+13. 7-Seg display
+    VCC     5V
+    GND     GND
+    DIN     P1.6
+    CS      P9.6
+    CLK     P1.5
+    DOUT    ---
 
-15. 7-Seg display
-    VCC     
-    GND     
-    DIN     
-    CS      
-    CLK     
-    DOUT    
-
-16. Temperature sensor
-    OUT
+14. Temperature sensor
+    OUT     P5.0
     Vcc     3V3
     GND     GND
+
+15. Alarm LED
+    P2.7
 
