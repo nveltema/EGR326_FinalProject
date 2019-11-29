@@ -102,10 +102,14 @@ Device Pin Connections
     +       3V3
     GND     GND
 
-7. Blinker Controll
+7. Blinker LED (right)
+
+8. Blinker LED (left)
+
+9. Blinker Control
     P5.6 (Slave MSP432)
 
-8. Tach stepper motor & driver board
+10. Tach stepper motor & driver board
     IN1     
     IN2     
     IN3     
@@ -113,7 +117,7 @@ Device Pin Connections
     +       
     -       
 
-9. Speedo stepper motor & driver board
+11. Speedo stepper motor & driver board
     IN1     P4.0
     IN2     P4.1
     IN3     P4.2
@@ -121,23 +125,23 @@ Device Pin Connections
     +       5V
     -       GND
 
-10. Speed Hall effect sensor
+12. Speed Hall effect sensor
     OUT     P3.0
         Note: OUT needs a pull up resistor (to 3V3) and a ~20pF cap to GND
     VCC     5V
     GND     GND
 
-11. Prox sensors
+13. Prox sensors
     Vcc     5V
     Trig    P2.5
     Echo    P2.4
         Note: Echo is a 5V output, needs a resistor & MOSFET logic level converter (inverts signal)
     Gnd     GND
 
-12. Speaker
+14. Speaker
     P2.4 (Slave MSP432)
 
-13. 7-Seg display
+15. 7-Seg display
     VCC     5V
     GND     GND
     DIN     P1.6
@@ -145,11 +149,11 @@ Device Pin Connections
     CLK     P1.5
     DOUT    ---
 
-14. Temperature sensor
+16. Temperature sensor
     OUT     P5.0
     Vcc     3V3
     GND     GND
 
-15. Alarm LED
+17. Alarm LED
     P2.7
 
