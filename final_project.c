@@ -19,6 +19,9 @@
 #define MS 48000         // 48000 clock cycles = 1ms
 #define US 48            // 48 clock cycles = 1us
 #define BOUNCE 10        // macro for debounce time delay
+#define PULSE 4     // stepper motor pulse delay
+#define MSP2 0x48
+
 
 // Struct to hold the Time-Date Stamp (TDS)
 typedef struct {
@@ -60,7 +63,23 @@ void i2c_burst_read(uint8_t slave_addr, uint8_t mem_addr, uint32_t byte_count, u
 
 // Proximity Sensor Functions
 void init_prox(void);
-void init_timerA(void);
+
+// Stepper Motors
+void init_Steppers(void);
+
+// Hall Effect
+void init_HallEffect(void);
+void get_RPMs(void);
+
+// External Temperature Sensor
+void init_TempSensor(void);
+
+// 7-Segment Display
+void init_7seg(void);
+void init_SPI(void);
+void SPI_7seg_write(uint16_t data);
+void seg_write_digit(uint8_t digit, int8_t val);
+
 
 //Global variables
 //----------------------------------------------------------------------------------------------------------------------------
@@ -83,12 +102,28 @@ uint8_t emp_btn = 0;
 // Proximity Sensor
 uint32_t TA0_count = 0;
 uint8_t prox_flag = 0;
+uint8_t prox_chime = 0;
 uint8_t reset_background = 0;
+uint8_t chime1[1] = {0};
+uint8_t stop_chime[1] = {0};
 
+// Stepper Motors
+static uint8_t last_speed_state = 0b00000011;   // Motor stepping starts with P4.0 and P4.1 high
+static uint8_t last_tach_state = 0b00110000;    // Motor stepping starts with P4.0 and P4.1 high
+uint16_t tach_position = 0;
 
-uint8_t speed = 55; //TODO: set to zero once speed detection is set up
-uint8_t temperature = 72;   //TODO: set to zero once temp detection is set up
+// Hall Effect
+uint16_t rpm = 0;
+uint16_t speed = 0;
+uint32_t tach[4] = {0};
+uint8_t tach_count = 0;
 
+// 7-Seg
+uint8_t ones = 0;
+uint8_t tens = 0;
+
+uint16_t temperature = 72;   //TODO: set to zero once temp detection is set up
+uint16_t ext_temp = 0;
 
 
 /**
@@ -96,18 +131,25 @@ uint8_t temperature = 72;   //TODO: set to zero once temp detection is set up
  */
 void main(void)
 {
-	WDT_A->CTL = WDT_A_CTL_PW | WDT_A_CTL_HOLD;		// stop watchdog timer
+    chime1[0] = 0x02;
+    stop_chime[0] = 0x00;
+
+    WDT_A->CTL = WDT_A_CTL_PW | WDT_A_CTL_HOLD;		// stop watchdog timer
 
     // System Setup
 	__disable_irq();
 	init_CLK_48MHz();
     init_SysTick();
     i2c_init();
+    init_7seg();
+    init_TempSensor();
     init_RotoryEncoder();
     init_Switches();
     init_timer32();
     init_prox();
-    init_timerA();
+    init_HallEffect();
+    init_Steppers();
+    init_7seg();
     __enable_irq();
 
     ST7735_InitR(INITR_BLACKTAB);                   // Initialize Greentab ST7735 Display
@@ -121,7 +163,10 @@ void main(void)
 
     while(1)
     {
+        __delay_cycles(MS);
         rtc_get_TDS();
+        get_RPMs();
+        ADC14->CTL0 |= 0x01;    // Start ADC Conversion for External Temperature
         update_LCD();
         if(emp_flag)
         {
@@ -171,17 +216,37 @@ void update_LCD(void)
         ST7735_DrawBitmap(0,160,warning_background,128,128);
         ST7735_DrawBitmap(2,133,prox3,124,101);
         reset_background = 1;
+        if(!prox_chime)
+        {
+            i2c_burst_write(MSP2, chime1[0], 1, chime1);
+            prox_chime = 1;
+            EUSCI_B1->IFG = 0;          // Clear all interrupt flags
+        }
+    }
+    else if(!prox_flag && prox_chime)
+    {
+        prox_chime = 0;
+        i2c_burst_write(MSP2, stop_chime[0], 1, stop_chime);
+        EUSCI_B1->IFG = 0;          // Clear all interrupt flags
     }
     else
     {
-        if(emp_btn || reset_background)
+        if(reset_background)
         {
             ST7735_FillScreen(0x0000);     // set screen to black
             ST7735_DrawBitmap(4, 116, large_background, 120, 80);
             ST7735_DrawBitmap(4, 156, small_background, 60, 40);
             ST7735_DrawBitmap(64, 156, small_background, 60, 40);
-            emp_btn = 0;
             reset_background = 0;
+        }
+        if(emp_btn)
+        {
+
+            ST7735_DrawBitmap(4, 116, large_background, 120, 80);
+            ST7735_DrawBitmap(4, 156, small_background, 60, 40);
+            ST7735_DrawBitmap(64, 156, small_background, 60, 40);
+            emp_btn = 0;
+
         }
 
         if(emp_speed)
@@ -656,14 +721,52 @@ void TA0_N_IRQHandler(void)
     else if(P2->IN & 0x10) {
         TA0_count = TIMER_A0->R;
     }
-    if(TA0_count < 3774)    // 3774 cycles / 1.5 cycles per US / 148 = 17 inches (16 + 1in offset)
-            {
-                prox_flag = 1;
-            }
-    else
+//    if(TA0_count < 3774)    // 3774 cycles / 1.5 cycles per US / 148 = 17 inches (16 + 1in offset)
+//    {
+//        prox_flag = 1;
+//    }
+//    else
+//    {
+//        prox_flag = 0;
+//    }
+
+}
+/**
+ *  Timer A3 Interrupt Handler
+ *  -> Triggered by Hall Effect Sensor for RPM Sensing
+ */
+void TA3_N_IRQHandler(void)
+{
+    uint16_t temp = 0;
+
+    TIMER_A3->CCTL[1] &= ~BIT0;             // Clear interrupt flag
+    temp = TIMER_A3->CCR[1];    // Save new cycle count into RPM array
+    TIMER_A3->CTL |= 0x4;                   // Restart timer count
+
+    if(temp > 1000)
     {
-        prox_flag = 0;
+        tach[tach_count] = temp;
+        tach_count++;               // Increment RPM array index
     }
+    P2->OUT ^= BIT2;                        // Toggle LED for Hall Effect Debugging TODO: Remove for final revision
+
+    // Reset index if max count reached
+    if(tach_count == 4)
+        tach_count = 0;
+}
+
+/**
+ * ADC Interrupt Handler
+ * Record analog input values when done converting.
+ */
+void ADC14_IRQHandler(void) {
+
+    uint32_t irq_flags = ADC14->IFGR0;      // Record and clear interrupt flags
+    ADC14->CLRIFGR0 |= 0x02;
+    uint16_t x = ADC14->MEM[5];
+
+    ext_temp = (x * 3.3 * 0.01) / 255;
+
 }
 
 //---------------------------------------------------------------------------------------------------------------- System Routines
@@ -737,12 +840,124 @@ void rotory_db_CCW(void)
         __delay_cycles(50);
     }
 }
+/**
+ *  Calculates RPM and Speed (MPH)
+ *  -> Averages cycle counts in RPM array from Hall Effect Capture
+ *  -> RPM = (60sec / 1min) * ( Revs / sec) = (60sec / 1min) * (Avg. Cycles * 2 Magnets * CLK Period)
+ *  -> Speed = (Revs / 1min) * (60min / 1hr) * (2piRadius ft / rev) * (1mi / 5280ft)
+ */
+void get_RPMs(void)
+{
+    double temp = 0;
+    temp = 60 / (((tach[0] + tach[1] + tach[2] + tach[3]) / 4.0) * 2.0 * 0.0000625);
+    rpm = (int)temp;
+    speed = (rpm * 60 * 2 * 3.14159 * 6) / 5280;
+    ones = speed % 10;
+    tens = speed / 10;
+
+    // Write new speed to 7-Segments
+    seg_write_digit(2, ones);
+    seg_write_digit(3, tens);
+    seg_write_digit(4, 0);
+    seg_write_digit(5, 0);
+
+    uint16_t i = 0;
+    uint16_t x = 0;
+    uint16_t steps = 0;
+
+    x = speed * 4;
+
+
+    // Step clockwise to the new position
+    if(x > tach_position)
+    {
+        steps = x - tach_position;
+        tach_position += steps;          // Save the new position
+        P8->OUT = last_tach_state;
+        for(i=0;i<steps;i++)
+        {
+//            P4->OUT = (P4->OUT << 1) & 0x0F;
+//            if((P4->OUT==0x08)||(P4->OUT==0x02)) {
+//                P4->OUT |= 0x01;
+//            }
+            P8->OUT = (P8->OUT << 1) & 0xF0;
+            if((P8->OUT==0x80)||(P8->OUT==0x20)) {
+                P8->OUT |= 0x10;
+            }
+            delay_ms(PULSE);
+        }
+        last_tach_state = P8->OUT & 0xF0;    // Save state of motor pins
+        P8->OUT &=~ 0xF0;               // Turn off motor pins
+    }
+
+    // Step counterclockwise to the new position
+    else if(x < tach_position)
+    {
+        steps = tach_position - x;
+        tach_position -= steps;              // Save the new position
+        P8->OUT = last_tach_state;
+        for(i=0;i<steps;i++)
+        {
+//            P4->OUT = (P4->OUT >> 1) & 0x0F;
+//            if((P4->OUT==0x01)||(P4->OUT==0x04)) {
+//                P4->OUT |= 0x08;
+//            }
+            P8->OUT = (P8->OUT >> 1) & 0xF0;
+            if((P8->OUT==0x10)||(P8->OUT==0x40)) {
+                P8->OUT |= 0x80;
+            }
+            delay_ms(PULSE);
+        }
+        last_tach_state = P8->OUT & 0xF0;    // Save state of motor pins
+        P8->OUT &=~ 0xF0;               // Turn off motor pins
+    }
+}
+
+/**
+ * Write data to the display
+ */
+void SPI_7seg_write(uint16_t data)
+{
+    __disable_irq();                            // Turn off interrupts to avoid timing issues
+    while((EUSCI_B0->IFG & 0x02) == 0x0);       // Wait for EUSCI_A3 to be available
+
+    // Set CS LOW
+    P9->OUT &=~ 0x40;
+    __delay_cycles(100);
+
+    EUSCI_B0->TXBUF = (data & 0xFF00) >> 8;     // Write second byte
+    while((EUSCI_B0->IFG & 0x02) == 0x0);       // Wait for TXBUF to be empty
+
+    EUSCI_B0->TXBUF = data & 0x00FF;            // Write first byte
+    while((EUSCI_B0->IFG & 0x02) == 0x0);       // Wait for TXBUF to be empty
+
+    // Set CS HIGH
+    __delay_cycles(2500);
+    P9->OUT |= 0x40;
+
+    __enable_irq();                             // Turn interrupts back on
+}
+
+/**
+ * Display a number on the 7-seg display
+ *
+ * param digit - digit on display to write to (0 to 7)
+ * param val - number to display on digit (0 to 9)
+ */
+void seg_write_digit(uint8_t digit, int8_t val)
+{
+
+    digit += 1;
+
+    uint16_t temp = ((digit & 0x0F) << 8) | (val & 0x0F);
+    SPI_7seg_write(temp);
+}
 
 //---------------------------------------------------------------------------------------------------------------- System Initialization Functions
 void init_timer32(void)
 {
     TIMER32_1->CONTROL = 0b11000010;    // Enabled, Periodic, IE disabled, 32-Bit counter (Interrupt enable is BIT5)
-    TIMER32_1->LOAD = (SEC * 60) - 1;     // Interrupt every second to update RPMs
+    TIMER32_1->LOAD = (SEC * 60) - 1;     // Interrupt every minute
     NVIC_EnableIRQ(T32_INT1_IRQn);      // Enable Timer32 interrupts
 }
 
@@ -824,34 +1039,234 @@ void init_Switches(void)
 
 /**
  * Setup Proximity Echo & Trigger
- * -> P2.5 as TA output
- * -> P2.4 as TA capture input
+ * -> P2.4 as TimerA0.1 capture for proximity echo
+ * -> P2.5 as TimerA0.2 output for proximity trigger
+ *      --> Echo from Prox is 5V signal
+ *      --> Echo connected to MOSFET gate w/ signal to MSP connected to drain pulled up to 3.3V
  */
-void init_prox(void) {
-
-    // Trigger pin  P2.5 -> TA0.2
-    // Echo pin     P2.4 -> TA0.1
-    P2->SEL0 |=  0x30;
-    P2->SEL1 &=~ 0x30;
+void init_prox(void)
+{
+    P2->SEL0 |=  0x20;      // 1011 0000
+    P2->SEL1 &=~ 0x20;
     P2->DIR  |=  0x20;
     P2->DIR  &=~ 0x10;
     P2->OUT  &=~ 0x20;
-}
-/**
- * Setup TA0.1 for capture input
- *       TA0.2 for pulse output
- */
-void init_timerA(void)
-{
+
+    // Prox Echo Capture Timer A0.1
     TIMER_A0->CCR[1]  = 0;
-    TIMER_A0->CCTL[1] = 0xC1F0;
+    TIMER_A0->CCTL[1] = 0xC1F0; //0b 1100 0001 1111 0000 Both Edges, CCIxA Input, Capture Mode, Reset/Set, Interrupt
+
+    // Prox Trigger on Timer A0.2
+    TIMER_A0->CCR[2]  = (10 * 2) - 1;   // 1us = 1.5 cycles after division so round up to 2
+    TIMER_A0->CCTL[2] = 0xE0;
+
+    // Alarm LED on Timer A0.4
 
     TIMER_A0->CCR[2]  = (10 * 2) - 1;   // 1us = 1.5 cycles after division so round up to 2
     TIMER_A0->CCTL[2] = 0xE0;
 
-    TIMER_A0->CTL     = 0x2E0;  //0010 1110 0000       SMCLK, /8, UP Mode
+
+    TIMER_A0->CTL = 0x2E0;  //0b 0010 1110 0000       SMCLK, /8, UP Mode
 
     NVIC_EnableIRQ(TA0_N_IRQn);
+}
+
+///**
+// * Setup TA0.1 for capture input  TODO: Remove after confirming prox still works
+// *       TA0.2 for pulse output
+// */
+//void init_timerA0(void)
+//{
+//    // Prox Echo Capture Timer A0.1
+//    TIMER_A0->CCR[1]  = 0;
+//    TIMER_A0->CCTL[1] = 0xC1F0;
+//
+//    // Prox Trigger on Timer A0.2
+//    TIMER_A0->CCR[2]  = (10 * 2) - 1;   // 1us = 1.5 cycles after division so round up to 2
+//    TIMER_A0->CCTL[2] = 0xE0;
+//
+//    TIMER_A0->CTL = 0x2E0;  //0b 0010 1110 0000       SMCLK, /8, UP Mode
+//
+//    NVIC_EnableIRQ(TA0_N_IRQn);
+//}
+
+/**
+ * Initialize Stepper Motors
+ *  -> P4.0-P4.3 Speedometer
+ *  -> P8.4-P8.7 Tachometer
+ */
+void init_Steppers(void) {
+    P4->SEL0 &=~ 0x0F;
+    P4->SEL1 &=~ 0x0F;
+    P4->OUT  &=~ 0x0F;
+    P4->DIR  |=  0x0F;
+
+    P8->SEL0 &=~ 0xF0;
+    P8->SEL1 &=~ 0xF0;
+    P8->OUT  &=~ 0xF0;
+    P8->DIR  |=  0xF0;
+
+    uint16_t i = 0;
+    P4->OUT = last_speed_state;       // Start stepping with P4.0 and P4.1 high
+    P8->OUT = last_tach_state;
+
+    // Sweep motor in both directions to zero out position
+    for(i=0;i<550;i++)
+    {
+        P4->OUT = (P4->OUT << 1) & 0x0F;
+        if((P4->OUT==0x08)||(P4->OUT==0x02)) {
+            P4->OUT |= 0x01;
+        }
+        P8->OUT = (P8->OUT << 1) & 0xF0;
+        if((P8->OUT==0x80)||(P8->OUT==0x20)) {
+            P8->OUT |= 0x10;
+        }
+        delay_ms(PULSE);
+    }
+    for(i=0;i<650;i++)
+    {
+        P4->OUT = (P4->OUT >> 1) & 0x0F;
+        if((P4->OUT==0x01)||(P4->OUT==0x04)) {
+            P4->OUT |= 0x08;
+        }
+        P8->OUT = (P8->OUT >> 1) & 0xF0;
+        if((P8->OUT==0x10)||(P8->OUT==0x40)) {
+            P8->OUT |= 0x80;
+        }
+        delay_ms(PULSE);
+    }
+    for(i=0;i<25;i++)
+    {
+        P4->OUT = (P4->OUT << 1) & 0x0F;
+        if((P4->OUT==0x08)||(P4->OUT==0x02)) {
+            P4->OUT |= 0x01;
+        }
+        P8->OUT = (P8->OUT << 1) & 0xF0;
+        if((P8->OUT==0x80)||(P8->OUT==0x20)) {
+            P8->OUT |= 0x10;
+        }
+        delay_ms(PULSE);
+    }
+    last_speed_state = P4->OUT & 0x0F;
+    P4->OUT &=~ 0x0F;
+    last_tach_state = P8->OUT & 0xF0;
+    P8->OUT &=~ 0xF0;
+}
+
+/**
+ * Initialize P10.5 on TimerA3.1 as Capture for Hall Effect Sensor
+ */
+void init_HallEffect(void)
+{
+    // Use P4.2 to verify output of ACLK    TODO: Remove for final revisions
+//    P4->SEL0 |= BIT2;
+//    P4->SEL1 &= ~BIT2;
+//    P4->DIR  |= BIT2;
+
+    // Hall effect capture on P10.5
+    P10->SEL0 |= BIT5;
+    P10->SEL1 &=~ BIT5;
+    P10->DIR  &=~ BIT5;
+
+    // LED on P2.2 used to watch Hall Effect response TODO: Remove for final revisions
+    P2->SEL0 &= ~BIT2;
+    P2->SEL1 &= ~BIT2;
+    P2->DIR |= BIT2;
+    P2->OUT &=~ BIT2;
+
+    TIMER_A3->CCR[1]  = 0;
+    TIMER_A3->CCTL[1] = 0x81F0; //0b 1000 0001 1111 0   Falling Edge, CCI3A, Asynch, Capture, Reset/Set, Interrupt Enable
+    TIMER_A3->CTL     = 0x1E0;  //0b 0001 1110 0000     ACLK, /8, Continuous Mode
+    NVIC_EnableIRQ(TA3_N_IRQn);
+}
+
+// P5.0 A5
+void init_TempSensor(void)
+{
+    P5->SEL0 |= BIT0;
+    P5->SEL1 |= BIT0;
+
+//    //TODO: reconfigure registers
+//    ADC14->CTL0 = 0;        // Clear ADC Control Register
+//    // No Prescale          00
+//    // Sample hold source   000
+//    // From sampling timer  1
+//    // Not Inverted         0
+//    // /8                   111
+//    // ACLK                 010
+//    // Single               00
+//    // Read Only            0
+//    // No Upper Channels    0000
+//    // Sample for 32 CLKs   0011
+//    // No sequence          0
+//    // Reserved             00
+//    // ADC ON               1
+//    // Reserved             00
+//    // Disabled             0
+//    // Start Conversion     0
+//    // 0b 0000 0101 1101 0000 0000 0011 0001 0000
+//    ADC14->CTL0 = 0x5D00310;
+//    ADC14->CTL1 = 0;                 // 14-Bit Resolution    TODO: 14-bit seems unnecessary, could lower??
+//    ADC14->MCTL[5] = 0x85;              // Stop Sequence after ADC Channel 5
+//    ADC14->IER0 |= 0x20;                // Interrupt after Channel 5 conversion
+//    ADC14->CTL0 |= 0x02;                // Enable ADC
+//    NVIC_EnableIRQ(ADC14_IRQn);         // Enable ADC Interrupts
+
+    ADC14->CTL0 = 0;
+    ADC14->CTL0 = 0b10000100001000100000001100010000;   // 0b 1000 0100 0010 0000 0000 0011 0001 0000 from lab 8
+    ADC14->CTL1 = 0;                        // 8-Bit Resolution
+    ADC14->MCTL[5] = BIT5|BIT7;            // BIT7 signifies end of sequence (so ADC will not run conversions for channels 2 thru 31)
+    ADC14->IER0 |= BIT5;                    // Interrupt when ADC conversion completes
+
+    ADC14->CTL0 |= 0b10;                    // Enable ADC
+    NVIC->ISER[0] |= 1 << ADC14_IRQn;       // Enable ADC interrupt handler
+
+}
+
+/**
+ * Initialize 8-character 7-segment display
+ */
+void init_7seg(void)
+{
+    init_SPI();                 // Setup eUSCI module for desired SPI use
+    //__delay_cycles(48000);
+
+    SPI_7seg_write(0x0C01);     // Set to normal operation
+    SPI_7seg_write(0x09FF);     // Set decode mode
+    SPI_7seg_write(0x0A03);     // Set LED's intensity
+    SPI_7seg_write(0x0B07);     // Set scan limit
+
+    // Set middle characters to zero, outside characters off
+    seg_write_digit(0, -1);
+    seg_write_digit(1, -1);
+    seg_write_digit(2, 0);
+    seg_write_digit(3, 0);
+    seg_write_digit(4, 0);
+    seg_write_digit(5, 0);
+    seg_write_digit(6, -1);
+    seg_write_digit(7, -1);
+}
+/**
+ * Initialize SPI Communication on EUSCI_B0
+ */
+void init_SPI(void)
+{
+    // Initialize eUSCI
+    EUSCI_B0->CTLW0 = 0x0001;   // eUSCI module in reset mode
+    EUSCI_B0->CTLW0 = 0xAD83;   // First edge, clock low, MSB first, 8-Bit, Master, Active Low, Synchronous, SMCLK, CS enables slave, Reset enabled
+    EUSCI_B0->BRW = 100;        // SMCLK / 100 = 120kHz
+//    EUSCI_A3->MCTLW = 0;        // No modulation used
+
+    P1->SEL0 |=  0x60;
+    P1->SEL1 &=~ 0x60;
+
+    P9->SEL0 &=~ 0x40;
+    P9->SEL1 &=~ 0x40;
+    P9->OUT  |=  0x40;
+    P9->DIR  |=  0x40;
+
+    EUSCI_B0->CTLW0 &= ~0x0001;                 // enable eUSCI module
+    EUSCI_B0->IE &= ~0x0003;                    // disable interrupts
 }
 
 //---------------------------------------------------------------------------------------------------------------- RTC Functions
