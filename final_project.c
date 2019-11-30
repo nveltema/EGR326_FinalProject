@@ -15,7 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define SEC 48000000     // 48E^6 clock cycles = 1s
+#define SEC ((uint32_t)48000000)     // 48E^6 clock cycles = 1s
 #define MS 48000         // 48000 clock cycles = 1ms
 #define US 48            // 48 clock cycles = 1us
 #define BOUNCE 10        // macro for debounce time delay
@@ -36,6 +36,18 @@ typedef struct {
 
 TDS_t TDS = {0};            // Struct for storing current TDS
 
+char day[7][10] = {
+                 "SUNDAY",
+                 "MONDAY",
+                 "TUESDAY",
+                 "WEDNESDAY",
+                 "THURSDAY",
+                 "FRIDAY",
+                 "SATURDAY",
+};
+
+
+
 void init_Switches(void);
 void init_CLK_48MHz(void);
 void init_RotoryEncoder(void);
@@ -52,7 +64,7 @@ void print_string(uint8_t x, uint8_t y,char str1[], uint16_t f_color, uint16_t b
 // Real Time Clock (RTC) Functions
 void rtc_get_TDS();
 void rtc_set_TDS();
-float rtc_get_temp(void);
+void rtc_get_temp(void);
 uint8_t bcd_to_dec(uint8_t bcd);
 uint8_t dec_to_bcd(uint8_t dec);
 
@@ -122,17 +134,24 @@ uint8_t tach_count = 0;
 uint8_t ones = 0;
 uint8_t tens = 0;
 
-uint16_t temperature = 72;   //TODO: set to zero once temp detection is set up
+uint16_t temperature = 0;
+uint8_t last_minute = 0;
+uint8_t temp_flag = 0;
+uint8_t temp_chime = 0;
+uint8_t chime2[1] = {0};
 uint16_t ext_temp = 0;
 
-
+char date_str[8];
 /**
  * main.c
  */
 void main(void)
 {
     chime1[0] = 0x02;
+    chime2[0] = 0x03;
     stop_chime[0] = 0x00;
+
+
 
     WDT_A->CTL = WDT_A_CTL_PW | WDT_A_CTL_HOLD;		// stop watchdog timer
 
@@ -157,14 +176,27 @@ void main(void)
 
     rtc_get_TDS(&TDS);
 
+
     ST7735_DrawBitmap(4, 116, large_background, 120, 80);
     ST7735_DrawBitmap(4, 156, small_background, 60, 40);
     ST7735_DrawBitmap(64, 156, small_background, 60, 40);
+    print_string(10,42,day[TDS.day - 1],ST7735_WHITE,0xDC22,1);
+    sprintf(date_str,"%02d/%02d/%02d",TDS.month,TDS.date,TDS.year);
+    print_string(72,42,date_str,ST7735_WHITE,0xDC22,1);
 
     while(1)
     {
-        __delay_cycles(MS);
+        last_minute = TDS.minutes;
         rtc_get_TDS();
+        if(last_minute < TDS.minutes)
+            {
+                rtc_get_temp();     //TODO: If time add temp read to TDS structure
+                if(temperature > 99)
+                    temp_flag = 1;
+                else
+                    temp_flag = 0;
+            }
+
         get_RPMs();
         ADC14->CTL0 |= 0x01;    // Start ADC Conversion for External Temperature
         update_LCD();
@@ -208,7 +240,7 @@ void update_LCD(void)
 {
     char speed_str[7];
     char time_str[5];
-    char date_str[8];
+//    char date_str[8];
     char temp_str[5];
 
     if(prox_flag)
@@ -218,14 +250,35 @@ void update_LCD(void)
         reset_background = 1;
         if(!prox_chime)
         {
+            TIMER32_2->CONTROL |= BIT5;     // Turn on Timer32_2 Interrupts
             i2c_burst_write(MSP2, chime1[0], 1, chime1);
             prox_chime = 1;
-            EUSCI_B1->IFG = 0;          // Clear all interrupt flags
+            EUSCI_B1->IFG = 0;          // Clear all interrupt flags    TODO: Could move this to end of burst read/write functions
         }
     }
     else if(!prox_flag && prox_chime)
     {
+        TIMER32_2->CONTROL &= ~BIT5;    // Turn off Timer32_2 Interrupts
+        P7->OUT &= ~0x10;               // Turn LED off
         prox_chime = 0;
+        i2c_burst_write(MSP2, stop_chime[0], 1, stop_chime);
+        EUSCI_B1->IFG = 0;          // Clear all interrupt flags
+    }
+    else if(temp_flag)
+    {
+        ST7735_DrawBitmap(0,160,warning_background,128,128);
+        ST7735_DrawBitmap(2,160,temp_warning,124,101);//was 133
+        reset_background = 1;
+        if(!temp_chime)
+        {
+            i2c_burst_write(MSP2, chime2[0], 1, chime2);
+            temp_chime = 1;
+            EUSCI_B1->IFG = 0;          // Clear all interrupt flags
+        }
+    }
+    else if(!temp_flag && temp_chime)
+    {
+        temp_chime = 0;
         i2c_burst_write(MSP2, stop_chime[0], 1, stop_chime);
         EUSCI_B1->IFG = 0;          // Clear all interrupt flags
     }
@@ -237,6 +290,9 @@ void update_LCD(void)
             ST7735_DrawBitmap(4, 116, large_background, 120, 80);
             ST7735_DrawBitmap(4, 156, small_background, 60, 40);
             ST7735_DrawBitmap(64, 156, small_background, 60, 40);
+            print_string(10,42,day[TDS.day - 1],ST7735_WHITE,0xDC22,1);
+            sprintf(date_str,"%02d/%02d/%02d",TDS.month,TDS.date,TDS.year);
+            print_string(72,42,date_str,ST7735_WHITE,0xDC22,1);
             reset_background = 0;
         }
         if(emp_btn)
@@ -245,6 +301,9 @@ void update_LCD(void)
             ST7735_DrawBitmap(4, 116, large_background, 120, 80);
             ST7735_DrawBitmap(4, 156, small_background, 60, 40);
             ST7735_DrawBitmap(64, 156, small_background, 60, 40);
+            print_string(10,42,day[TDS.day - 1],ST7735_WHITE,0xDC22,1);
+            sprintf(date_str,"%02d/%02d/%02d",TDS.month,TDS.date,TDS.year);
+            print_string(72,42,date_str,ST7735_WHITE,0xDC22,1);
             emp_btn = 0;
 
         }
@@ -256,10 +315,10 @@ void update_LCD(void)
             print_string(20,78,speed_str,ST7735_BLACK,ST7735_WHITE,2);
 
             sprintf(time_str,"%2d:%02d",TDS.hours,TDS.minutes);
-            print_string(20,130,time_str,ST7735_BLACK,ST7735_WHITE,1);
+            print_string(20,135,time_str,ST7735_BLACK,ST7735_WHITE,1);
 
-            sprintf(date_str,"%02d/%02d/%02d",TDS.month,TDS.date,TDS.year);
-            print_string(10,140,date_str,ST7735_BLACK,ST7735_WHITE,1);
+//            sprintf(date_str,"%02d/%02d/%02d",TDS.month,TDS.date,TDS.year);
+//            print_string(10,140,date_str,ST7735_BLACK,ST7735_WHITE,1);
 
             sprintf(temp_str,"%3d F",temperature);
             print_string(78,135,temp_str,ST7735_BLACK,ST7735_WHITE,1);
@@ -268,10 +327,10 @@ void update_LCD(void)
         {
 
             sprintf(time_str,"%2d:%02d",TDS.hours,TDS.minutes);
-            print_string(32,68,time_str,ST7735_BLACK,ST7735_WHITE,2);
+            print_string(32,78,time_str,ST7735_BLACK,ST7735_WHITE,2);
 
-            sprintf(date_str,"%02d/%02d/%02d",TDS.month,TDS.date,TDS.year);
-            print_string(15,88,date_str,ST7735_BLACK,ST7735_WHITE,2);
+//            sprintf(date_str,"%02d/%02d/%02d",TDS.month,TDS.date,TDS.year);
+//            print_string(15,88,date_str,ST7735_BLACK,ST7735_WHITE,2);
 
             sprintf(temp_str,"%3d F",temperature);
             print_string(20,135,temp_str,ST7735_BLACK,ST7735_WHITE,1);
@@ -286,10 +345,10 @@ void update_LCD(void)
             print_string(34,78,temp_str,ST7735_BLACK,ST7735_WHITE,2);
 
             sprintf(time_str,"%2d:%02d",TDS.hours,TDS.minutes);
-            print_string(79,130,time_str,ST7735_BLACK,ST7735_WHITE,1);
+            print_string(79,135,time_str,ST7735_BLACK,ST7735_WHITE,1);
 
-            sprintf(date_str,"%02d/%02d/%02d",TDS.month,TDS.date,TDS.year);
-            print_string(70,140,date_str,ST7735_BLACK,ST7735_WHITE,1);
+//            sprintf(date_str,"%02d/%02d/%02d",TDS.month,TDS.date,TDS.year);
+//            print_string(70,140,date_str,ST7735_BLACK,ST7735_WHITE,1);
 
             sprintf(speed_str,"%3d MPH",speed);
             print_string(14,135,speed_str,ST7735_BLACK,ST7735_WHITE,1);
@@ -328,6 +387,7 @@ void user_input(void)
     uint8_t menu = 0;
     char str1[10];
     char str2[2];
+
     P5->IE |= 0x70;                                             // Enable encoder pin interrupts
 
     ST7735_DrawBitmap(0,160,menu_background,128,128);
@@ -341,7 +401,7 @@ void user_input(void)
     {
         if(enc_flag)
         {
-            TIMER32_1->LOAD = (SEC * 60) - 1;      // Reset timer32 count
+            TIMER32_1->LOAD = (SEC * 60) - 1;      // Reset one minute menu timeout
             btn_debounce(5,6);
             enc_flag = 0;
             __delay_cycles(MS);     //TODO: need solution for delay
@@ -353,14 +413,14 @@ void user_input(void)
         {
             if(cw)
             {
-                TIMER32_1->LOAD = (SEC * 60) - 1;      // Reset timer32 count
+                TIMER32_1->LOAD = (SEC * 60) - 1;      // Reset one minute menu timeout
                 ST7735_FillRect(x, y_settime, 8, 8, ST7735_WHITE);
                 ST7735_FillRect(x, y_setdate, 8, 8, ST7735_RED);
                 menu = 1;
             }
             else if(ccw)
             {
-                TIMER32_1->LOAD = (SEC * 60) - 1;      // Reset timer32 count
+                TIMER32_1->LOAD = (SEC * 60) - 1;      // Reset one minute menu timeout
                 ST7735_FillRect(x, y_settime, 8, 8, ST7735_WHITE);
                 ST7735_FillRect(x, y_log, 8, 8, ST7735_RED);
                 menu = 2;
@@ -372,14 +432,14 @@ void user_input(void)
         {
             if(cw)
             {
-                TIMER32_1->LOAD = (SEC * 60) - 1;      // Reset timer32 count
+                TIMER32_1->LOAD = (SEC * 60) - 1;      // Reset one minute menu timeout
                 ST7735_FillRect(x, y_setdate, 8, 8, ST7735_WHITE);
                 ST7735_FillRect(x, y_log, 8, 8, ST7735_RED);
                 menu = 2;
             }
             else if(ccw)
             {
-                TIMER32_1->LOAD = (SEC * 60) - 1;      // Reset timer32 count
+                TIMER32_1->LOAD = (SEC * 60) - 1;      // Reset one minute menu timeout
                 ST7735_FillRect(x, y_setdate, 8, 8, ST7735_WHITE);
                 ST7735_FillRect(x, y_settime, 8, 8, ST7735_RED);
                 menu = 0;
@@ -391,14 +451,14 @@ void user_input(void)
         {
             if(cw)
             {
-                TIMER32_1->LOAD = (SEC * 60) - 1;      // Reset timer32 count
+                TIMER32_1->LOAD = (SEC * 60) - 1;      // Reset one minute menu timeout
                 ST7735_FillRect(x, y_log, 8, 8, ST7735_WHITE);
                 ST7735_FillRect(x, y_settime, 8, 8, ST7735_RED);
                 menu = 0;
             }
             else if(ccw)
             {
-                TIMER32_1->LOAD = (SEC * 60) - 1;      // Reset timer32 count
+                TIMER32_1->LOAD = (SEC * 60) - 1;      // Reset one minute menu timeout
                 ST7735_FillRect(x, y_log, 8, 8, ST7735_WHITE);
                 ST7735_FillRect(x, y_setdate, 8, 8, ST7735_RED);
                 menu = 1;
@@ -419,19 +479,22 @@ void user_input(void)
         ST7735_SetCursor(5,9);
         ST7735_SetTextColor(0x0000);
         ST7735_OutString(str1);
+        ST7735_FillRect(30, 106, 23, 2, ST7735_RED);    // Print red line for selection marker
         while(!enc_btn && !time_out)
         {
             if(enc_flag)
             {
-                TIMER32_1->LOAD = (SEC * 60) - 1;      // Reset timer32 count
+                TIMER32_1->LOAD = (SEC * 60) - 1;      // Reset one minute menu timeout
                 btn_debounce(5,6);
                 enc_flag = 0;
                 __delay_cycles(MS);     //TODO: need solution for delay
                 P5->IE |= 0x40;
+                ST7735_FillRect(30, 106, 23, 2, ST7735_WHITE);      // Erase red line
+                ST7735_FillRect(66, 106, 22, 2, ST7735_RED);        // Print red line for selection marker
             }
             if(cw)
             {
-                TIMER32_1->LOAD = (SEC * 60) - 1;      // Reset timer32 count
+                TIMER32_1->LOAD = (SEC * 60) - 1;      // Reset one minute menu timeout
                 TDS.hours++;
                 if(TDS.hours == 13)
                     TDS.hours = 1;
@@ -442,7 +505,7 @@ void user_input(void)
             }
             else if(ccw)
             {
-                TIMER32_1->LOAD = (SEC * 60) - 1;      // Reset timer32 count
+                TIMER32_1->LOAD = (SEC * 60) - 1;      // Reset one minute menu timeout
                 TDS.hours--;
                 if(TDS.hours > 13)
                     TDS.hours = 12;
@@ -461,15 +524,16 @@ void user_input(void)
         {
             if(enc_flag)
             {
-                TIMER32_1->LOAD = (SEC * 60) - 1;      // Reset timer32 count
+                TIMER32_1->LOAD = (SEC * 60) - 1;      // Reset one minute menu timeout
                 btn_debounce(5,6);
                 enc_flag = 0;
                 __delay_cycles(MS);     //TODO: need solution for delay
                 P5->IE |= 0x40;
+                ST7735_FillRect(66, 106, 22, 2, ST7735_WHITE);      // Erase red line
             }
             if(cw)
             {
-                TIMER32_1->LOAD = (SEC * 60) - 1;      // Reset timer32 count
+                TIMER32_1->LOAD = (SEC * 60) - 1;      // Reset one minute menu timeout
                 TDS.minutes++;
                 if(TDS.minutes == 60)
                     TDS.minutes = 0;
@@ -480,7 +544,7 @@ void user_input(void)
             }
             else if(ccw)
             {
-                TIMER32_1->LOAD = (SEC * 60) - 1;      // Reset timer32 count
+                TIMER32_1->LOAD = (SEC * 60) - 1;      // Reset one minute menu timeout
                 TDS.minutes--;
                 if(TDS.minutes > 60)
                     TDS.minutes = 59;
@@ -499,33 +563,77 @@ void user_input(void)
     else if(menu == 1)
     {
         sprintf(str1,"%02d/%02d/%02d",TDS.month,TDS.date,TDS.year);
-        ST7735_SetCursor(3,9);
         ST7735_DrawBitmap(0,160,date_background,128,128);
+        ST7735_SetCursor(2,8);
+        ST7735_OutString(day[(TDS.day) - 1]);
+        ST7735_SetCursor(2,10);
         ST7735_OutString(str1);
+        ST7735_FillRect(12, 96, 70, 2, ST7735_RED);     // Print red line for selection marker
+        // Set Day of the Week
         while(!enc_btn && !time_out)
         {
             if(enc_flag)
             {
-                TIMER32_1->LOAD = (SEC * 60) - 1;      // Reset timer32 count
+                TIMER32_1->LOAD = (SEC * 60) - 1;      // Reset one minute menu timeout
                 btn_debounce(5,6);
                 enc_flag = 0;
                 __delay_cycles(MS);     //TODO: need solution for delay
                 P5->IE |= 0x40;
+                ST7735_FillRect(12, 96, 70, 2, ST7735_WHITE); // Erase red line
+                ST7735_FillRect(12, 116, 22, 2, ST7735_RED);                                              // Print red line for selection marker
             }
             if(cw)
             {
-                TIMER32_1->LOAD = (SEC * 60) - 1;      // Reset timer32 count
+                TIMER32_1->LOAD = (SEC * 60) - 1;      // Reset one minute menu timeout
+                TDS.day++;
+                if(TDS.day == 8)
+                    TDS.day = 1;
+                cw = 0;
+                ST7735_FillRect(10, 80, 115, 14, ST7735_WHITE);
+                ST7735_SetCursor(2,8);
+                ST7735_OutString(day[(TDS.day) - 1]);
+            }
+            else if(ccw)
+            {
+                TIMER32_1->LOAD = (SEC * 60) - 1;      // Reset one minute menu timeout
+                TDS.day--;
+                if(TDS.day == 0)
+                    TDS.day = 7;
+                ccw = 0;
+                ST7735_FillRect(10, 80, 115, 14, ST7735_WHITE);
+                ST7735_SetCursor(2,8);
+                ST7735_OutString(day[(TDS.day) - 1]);
+            }
+            __delay_cycles(MS);     //TODO: fix timing issue
+            P5->IE |= 0x30;
+        }
+        enc_btn = 0;
+        while(!enc_btn && !time_out)
+        {
+            if(enc_flag)
+            {
+                TIMER32_1->LOAD = (SEC * 60) - 1;      // Reset one minute menu timeout
+                btn_debounce(5,6);
+                enc_flag = 0;
+                __delay_cycles(MS);     //TODO: need solution for delay
+                P5->IE |= 0x40;
+                ST7735_FillRect(12, 116, 22, 2, ST7735_WHITE); // Erase red line
+                ST7735_FillRect(47, 116, 22, 2, ST7735_RED);                                              // Print red line for selection marker
+            }
+            if(cw)
+            {
+                TIMER32_1->LOAD = (SEC * 60) - 1;      // Reset one minute menu timeout
                 TDS.month++;
                 if(TDS.month == 13)
                     TDS.month = 1;
                 cw = 0;
                 sprintf(str2,"%02d",TDS.month);
-                ST7735_SetCursor(3,9);
+                ST7735_SetCursor(2,10);
                 ST7735_OutString(str2);
             }
             else if(ccw)
             {
-                TIMER32_1->LOAD = (SEC * 60) - 1;      // Reset timer32 count
+                TIMER32_1->LOAD = (SEC * 60) - 1;      // Reset one minute menu timeout
                 TDS.month--;
                 if(TDS.month > 13)
                     TDS.month = 12;
@@ -533,7 +641,7 @@ void user_input(void)
                     TDS.month = 12;
                 ccw = 0;
                 sprintf(str2,"%02d",TDS.month);
-                ST7735_SetCursor(3,9);
+                ST7735_SetCursor(2,10);
                 ST7735_OutString(str2);
             }
             __delay_cycles(MS);     //TODO: fix timing issue
@@ -544,43 +652,47 @@ void user_input(void)
         {
             if(enc_flag)
             {
-                TIMER32_1->LOAD = (SEC * 60) - 1;      // Reset timer32 count
+                TIMER32_1->LOAD = (SEC * 60) - 1;      // Reset one minute menu timeout
                 btn_debounce(5,6);
                 enc_flag = 0;
                 __delay_cycles(MS);     //TODO: need solution for delay
                 P5->IE |= 0x40;
+                ST7735_FillRect(47, 116, 22, 2, ST7735_WHITE); // Erase red line
+                ST7735_FillRect(84, 116, 22, 2, ST7735_RED);                                              // Print red line for selection marker
             }
             if(cw)                              // TODO: add logic for varying # of days in months
             {
-                TIMER32_1->LOAD = (SEC * 60) - 1;      // Reset timer32 count
+                TIMER32_1->LOAD = (SEC * 60) - 1;      // Reset one minute menu timeout
                 TDS.date++;
                 if(TDS.date == 32)
                     TDS.date = 1;
                 cw = 0;
                 sprintf(str2,"%02d",TDS.date);
-                ST7735_SetCursor(9,9);
+                ST7735_SetCursor(8,10);
                 ST7735_OutString(str2);
             }
             else if(ccw)
             {
-                TIMER32_1->LOAD = (SEC * 60) - 1;      // Reset timer32 count
+                TIMER32_1->LOAD = (SEC * 60) - 1;      // Reset one minute menu timeout
                 TDS.date--;
                 if(TDS.date == 0)
                     TDS.date = 31;
                 ccw = 0;
                 sprintf(str2,"%02d",TDS.date);
-                ST7735_SetCursor(9,9);
+                ST7735_SetCursor(8,10);
                 ST7735_OutString(str2);
             }
             __delay_cycles(MS);     //TODO: fix timing issue
             P5->IE |= 0x30;
         }
         enc_btn = 0;
+
+        // SET YEAR
         while(!enc_btn && !time_out)
         {
             if(enc_flag)
             {
-                TIMER32_1->LOAD = (SEC * 60) - 1;      // Reset timer32 count
+                TIMER32_1->LOAD = (SEC * 60) - 1;      // Reset one minute menu timeout
                 btn_debounce(5,6);
                 enc_flag = 0;
                 __delay_cycles(MS);     //TODO: need solution for delay
@@ -588,24 +700,24 @@ void user_input(void)
             }
             if(cw)
             {
-                TIMER32_1->LOAD = (SEC * 60) - 1;      // Reset timer32 count
+                TIMER32_1->LOAD = (SEC * 60) - 1;      // Reset one minute menu timeout
                 TDS.year++;
                 if(TDS.year == 100)
                     TDS.year = 0;
                 cw = 0;
                 sprintf(str2,"%02d",TDS.year);
-                ST7735_SetCursor(15,9);
+                ST7735_SetCursor(14,10);
                 ST7735_OutString(str2);
             }
             else if(ccw)
             {
-                TIMER32_1->LOAD = (SEC * 60) - 1;      // Reset timer32 count
+                TIMER32_1->LOAD = (SEC * 60) - 1;      // Reset one minute menu timeout
                 TDS.year--;
                 if(TDS.year > 100)
                     TDS.year = 99;
                 ccw = 0;
                 sprintf(str2,"%02d",TDS.year);
-                ST7735_SetCursor(15,9);
+                ST7735_SetCursor(14,10);
                 ST7735_OutString(str2);
             }
             __delay_cycles(MS);     //TODO: fix timing issue
@@ -626,6 +738,9 @@ void user_input(void)
     ST7735_DrawBitmap(4, 116, large_background, 120, 80);
     ST7735_DrawBitmap(4, 156, small_background, 60, 40);
     ST7735_DrawBitmap(64, 156, small_background, 60, 40);
+    print_string(10,42,day[TDS.day - 1],ST7735_WHITE,0xDC22,1);
+    sprintf(date_str,"%02d/%02d/%02d",TDS.month,TDS.date,TDS.year);
+    print_string(72,42,date_str,ST7735_WHITE,0xDC22,1);
     TIMER32_1->CONTROL &= ~0x20;    // Disable timer32 interrupt (turn off menu time out)
     time_out = 0;
 }
@@ -642,6 +757,15 @@ void T32_INT1_IRQHandler(void)
     TIMER32_1->INTCLR = 1;              //clear Timer32 interrupt flag
     time_out = 1;
 }
+/**
+ * Timer32_2 interrupt handler
+ */
+void T32_INT2_IRQHandler(void)
+{
+    TIMER32_2->INTCLR = 1;              //clear Timer32 interrupt flag
+    P7->OUT ^= 0x10;
+}
+
 
 /**
  *  Port 2 Interrupt Handler
@@ -958,7 +1082,11 @@ void init_timer32(void)
 {
     TIMER32_1->CONTROL = 0b11000010;    // Enabled, Periodic, IE disabled, 32-Bit counter (Interrupt enable is BIT5)
     TIMER32_1->LOAD = (SEC * 60) - 1;     // Interrupt every minute
-    NVIC_EnableIRQ(T32_INT1_IRQn);      // Enable Timer32 interrupts
+    NVIC_EnableIRQ(T32_INT1_IRQn);      // Enable Timer32_1 interrupts
+
+    TIMER32_2->CONTROL = 0b11000010;    // 0b11 Enabled, Periodic, IE disabled, 32-Bit counter (Interrupt enable is BIT5)
+    TIMER32_2->LOAD = 12000000 - 1;     // Interrupt every quarter second
+    NVIC_EnableIRQ(T32_INT2_IRQn);      // Enable Timer32_2 interrupts
 }
 
 
@@ -1046,8 +1174,8 @@ void init_Switches(void)
  */
 void init_prox(void)
 {
-    P2->SEL0 |=  0x20;      // 1011 0000
-    P2->SEL1 &=~ 0x20;
+    P2->SEL0 |=  0x30;
+    P2->SEL1 &=~ 0x30;
     P2->DIR  |=  0x20;
     P2->DIR  &=~ 0x10;
     P2->OUT  &=~ 0x20;
@@ -1060,13 +1188,13 @@ void init_prox(void)
     TIMER_A0->CCR[2]  = (10 * 2) - 1;   // 1us = 1.5 cycles after division so round up to 2
     TIMER_A0->CCTL[2] = 0xE0;
 
-    // Alarm LED on Timer A0.4
-
-    TIMER_A0->CCR[2]  = (10 * 2) - 1;   // 1us = 1.5 cycles after division so round up to 2
-    TIMER_A0->CCTL[2] = 0xE0;
-
-
     TIMER_A0->CTL = 0x2E0;  //0b 0010 1110 0000       SMCLK, /8, UP Mode
+
+    // Alarm LED on P7.4
+    P7->SEL0 &= ~0x10;
+    P7->SEL1 &= ~0x10;
+    P7->DIR |= 0x10;
+    P7->OUT &= ~0x10;
 
     NVIC_EnableIRQ(TA0_N_IRQn);
 }
@@ -1323,23 +1451,23 @@ void rtc_get_TDS() {    //TDS_t *TDS
  *
  * return the temperature in degrees celsius
  */
-//void rtc_get_temp(void) {
-//
-//    const uint8_t buff_size = 2;
-//    uint8_t buff[2] = {0};
-//    int temp = 0;
-//
-//    // Read raw data from RTC temp sensor
-//    i2c_burst_read(0x68, 0x11, buff_size, buff);
-//
-//    // Convert temp data into an int
-//    temp = ((buff[0] << 8) | (buff[1])) >> 6;
-//    if(buff[0] & 0x80) {
-//        temp = temp * -1;
-//    }
-//
-//    return temp * 0.25;
-//}
+void rtc_get_temp(void) {
+
+    const uint8_t buff_size = 2;
+    uint8_t buff[2] = {0};
+    int temp = 0;
+
+    // Read raw data from RTC temp sensor
+    i2c_burst_read(0x68, 0x11, buff_size, buff);
+
+    // Convert temp data into an int
+    temp = ((buff[0] << 8) | (buff[1])) >> 6;
+    if(buff[0] & 0x80) {
+        temp = temp * -1;
+    }
+
+    temperature = (temp * 0.45) + 32;
+}
 
 /**
  * Convert a BCD encoded value to standard integer encoding
