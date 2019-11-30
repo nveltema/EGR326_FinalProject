@@ -7,7 +7,7 @@ EGR326 Project
 Hardware Devices
 -------------------------------------------------
 1.   MSP432 (Master)
-2.   MSp432 (Slave)
+2.   MSP432 (Slave)
 3.   LCD ST7735
 4.   Screen btn
 5.   RTC DS3231
@@ -47,6 +47,8 @@ P5.6
 
 P6.4
 P6.5
+
+P7.4
 
 P8.5
 
@@ -110,12 +112,12 @@ Device Pin Connections
     P5.6 (Slave MSP432)
 
 10. Tach stepper motor & driver board
-    IN1     
-    IN2     
-    IN3     
-    IN4     
-    +       
-    -       
+    IN1     P8.4
+    IN2     P8.5
+    IN3     P8.6
+    IN4     P8.7
+    +       5V
+    -       GND
 
 11. Speedo stepper motor & driver board
     IN1     P4.0
@@ -155,5 +157,5 @@ Device Pin Connections
     GND     GND
 
 17. Alarm LED
-    P2.7
+    P7.4
 
